@@ -1,0 +1,97 @@
+connectIPVersion: v4
+upstreams:
+  groups:
+    default:
+      - tcp-tls:one.one.one.one
+      - tcp-tls:dns.quad9.net
+      - https://cloudflare-dns.com/dns-query
+      - https://dns.quad9.net/dns-query
+  timeout: 2s
+
+customDNS:
+  mapping:
+    printer.${SECRET_INTERNAL_DOMAIN}: 10.17.1.11
+    9.1.17.10.in-addr.arpa: nash.${SECRET_INTERNAL_DOMAIN}
+    11.1.17.10.in-addr.arpa: printer.${SECRET_INTERNAL_DOMAIN}
+
+conditional:
+  mapping:
+    ${SECRET_INTERNAL_DOMAIN}: tcp+udp:10.17.8.1
+    ${SECRET_DOMAIN}: tcp+udp:10.17.8.99
+    8.17.10.in-addr.arpa: tcp+udp:10.17.8.1
+    0.17.10.in-addr.arpa: tcp+udp:10.17.8.1
+
+bootstrapDns:
+  upstream: tcp-tls:one.one.one.one
+  ips:
+  - 1.1.1.1
+
+ede:
+  enable: false
+
+redis:
+  address: redis.databases.svc:6379
+  database: 2
+  required: true
+  connectionAttempts: 10
+  connectionCooldown: 3s
+
+blocking:
+  loading:
+    downloads:
+      timeout: 30s
+  denylists:
+    ads:
+      # PiHole default
+      - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+      # via onedr0p
+      # - https://raw.githubusercontent.com/ookangzheng/dbl-oisd-nl/master/dbl.txt
+      # This list is now empty, but the oisd.nl team has their own source:
+      - https://big.oisd.nl/domainswild
+      # trying to block iOS game ads
+      - https://raw.githubusercontent.com/BlackJack8/iOSAdblockList/master/Regular%20Hosts.txt
+    youtube:
+      - |
+        youtube.com
+        www.youtube.com
+        m.youtube.com
+        youtubei.googleapis.com
+        youtube.googleapis.com
+        www.youtube-nocookie.com
+    noblock: []
+
+  allowlists:
+    ads: &whiteList
+      - https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/whitelist.txt
+    noblock: []
+
+  clientGroupsBlock:
+    default:
+      - ads
+      - youtube
+    10.17.0.5/32:
+      - noblock
+    10.17.0.12/32:
+      - noblock
+
+clientLookup:
+  upstream: tcp+udp:10.17.0.1
+
+caching:
+  prefetching: true
+  prefetchExpires: 2h
+
+prometheus:
+  enable: true
+  path: /metrics
+
+ports:
+  dns: 53
+  https: 443
+  tls: 853
+  http: 4000
+certFile: /certs/tls.crt
+keyFile: /certs/tls.key
+log:
+  level: info
+  format: text

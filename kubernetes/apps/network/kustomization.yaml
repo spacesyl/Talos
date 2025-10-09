@@ -10,3 +10,4 @@ resources:
   - ./cloudflare-tunnel/ks.yaml
   - ./k8s-gateway/ks.yaml
   - ./chrony/ks.yaml
+  - ./blocky/ks.yaml
