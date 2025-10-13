@@ -4,7 +4,7 @@ kind: HorizontalPodAutoscaler
 metadata:
   name: blocky
 spec:
-  maxReplicas: 4
+  maxReplicas: 3
   metrics:
   - resource:
       name: memory
@@ -18,7 +18,7 @@ spec:
         averageUtilization: 80
         type: Utilization
     type: Resource
-  minReplicas: 2
+  minReplicas: 1
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment

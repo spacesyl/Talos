@@ -8,7 +8,6 @@ upstream:
 customDNS:
   mapping:
     unifi.${SECRET_INTERNAL_DOMAINE}: 10.17.0.11
-    #11.0.17.10.in-addr.arpa: unifi.${SECRET_INTERNAL_DOMAINE}
 
 conditional:
   mapping:
