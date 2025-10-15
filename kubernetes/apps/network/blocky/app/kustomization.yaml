@@ -6,6 +6,7 @@ resources:
   # - ./secrets.yaml
   - ./helmrelease.yaml
   - ./hpa.yaml
+  - ./ocirepository.yaml
 configMapGenerator:
   - name: blocky-config
     files:
