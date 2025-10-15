@@ -5,7 +5,7 @@ metadata:
   name: &app chrony
   namespace: flux-system
 spec:
-  path: ./kubernetes/apps/services/chrony/app
+  path: ./kubernetes/apps/network/chrony/app
   prune: true
   sourceRef:
     kind: GitRepository
