@@ -93,7 +93,9 @@ tasks:
     cmds:
       - for: { var: SECRET_FILES }
         cmd: |
-          sops -d "{{.ITEM}}" &>/dev/null || sops --encrypt --in-place "{{.ITEM}}"
+          if [ $(sops filestatus "{{.ITEM}}" | jq ".encrypted") == "false" ]; then
+              sops --encrypt --in-place "{{.ITEM}}"
+          fi
     vars:
       SECRET_FILES:
         sh: find "{{.BOOTSTRAP_DIR}}" "{{.KUBERNETES_DIR}}" "{{.TALOS_DIR}}" -type f -name "*.sops.*" -print
