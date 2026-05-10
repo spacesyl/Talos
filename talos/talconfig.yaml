@@ -20,8 +20,7 @@ cniConfig:
 nodes:
   - hostname: "ctrl1"
     ipAddress: "10.17.0.31"
-    installDiskSelector:
-      serial: "0xdc4091f9"
+    installDisk: "/dev/nvme0n1"
     machineSpec:
       secureboot: false
     talosImageURL: factory.talos.dev/installer/ee21ef4a5ef808a9b7484cc0dda0f25075021691c8c09a276591eedb638ea1f9
@@ -40,8 +39,7 @@ nodes:
           ip: "10.17.0.98"
   - hostname: "ctrl2"
     ipAddress: "10.17.0.32"
-    installDiskSelector:
-      serial: "0xdc065b99"
+    installDisk: "/dev/nvme0n1"
     machineSpec:
       secureboot: false
     talosImageURL: factory.talos.dev/installer/ee21ef4a5ef808a9b7484cc0dda0f25075021691c8c09a276591eedb638ea1f9
@@ -60,8 +58,7 @@ nodes:
           ip: "10.17.0.98"
   - hostname: "ctrl3"
     ipAddress: "10.17.0.33"
-    installDiskSelector:
-      serial: "0xdc2845e7"
+    installDisk: "/dev/nvme0n1"
     machineSpec:
       secureboot: false
     talosImageURL: factory.talos.dev/installer/ee21ef4a5ef808a9b7484cc0dda0f25075021691c8c09a276591eedb638ea1f9
