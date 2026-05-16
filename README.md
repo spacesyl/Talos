@@ -185,7 +185,7 @@ These guidelines provide a strong baseline, but there are always exceptions and 
 1. Check the status of Cilium:
 
     ```sh
-    cilium status
+    kubectl -n kube-system exec ds/cilium --container cilium-agent -- cilium status
     ```
 
 2. Check the status of Flux and if the Flux resources are up-to-date and in a ready state:

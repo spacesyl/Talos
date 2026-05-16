@@ -13,6 +13,7 @@
 kubeconfig
 talosconfig
 # Misc.
+.claude/
 .private/
 .venv/
 .DS_Store
