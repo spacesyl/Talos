@@ -32,6 +32,7 @@ talhelper = "3.1.12"
 talosctl = "1.13.5"
 yq = "4.53.3"
 zizmor = "1.26.1"
+node = "latest"
 
 [hooks]
 postinstall = "lefthook install"
