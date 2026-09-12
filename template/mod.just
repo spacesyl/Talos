@@ -16,6 +16,7 @@ makejinja_config := justfile_dir() + '/makejinja.toml'
 mise_fragment := justfile_dir() + '/.mise/conf.d/template.toml'
 
 config_file := justfile_dir() + '/cluster.toml'
+schema_file := justfile_dir() + '/cluster.schema.json'
 sample_config_file := justfile_dir() + '/cluster.sample.toml'
 validate_script := template_dir + '/scripts/validate.py'
 deploy_key := justfile_dir() + '/deploy.key'
@@ -63,6 +64,14 @@ init:
     [ -f "$SOPS_AGE_KEY_FILE" ]       || age-keygen -pq --output "$SOPS_AGE_KEY_FILE"
     [ -f "{{ deploy_key }}" ]         || ssh-keygen -t ed25519 -C "deploy-key" -f "{{ deploy_key }}" -q -P ""
     [ -f "{{ webhook_token_file }}" ] || openssl rand -hex 16 > "{{ webhook_token_file }}"
+
+# Editors resolve the #:schema directive in cluster.toml against this file;
+# the validator tests fail when it drifts from the pydantic model.
+[doc('Regenerate the cluster.toml JSON Schema from the validator')]
+[group('template')]
+schema:
+    uv run --quiet --locked --no-dev "{{ validate_script }}" --schema > "{{ schema_file }}"
+    oxfmt "{{ schema_file }}" > /dev/null
 
 [confirm("Remove all templated files and directories — continue? [y/N]")]
 [doc('Remove rendered files (bootstrap/, kubernetes/, talos/, .sops.yaml)')]
@@ -121,6 +130,7 @@ tidy-archive:
         "{{ template_dir }}" \
         "{{ makejinja_config }}" \
         "{{ mise_fragment }}" \
+        "{{ schema_file }}" \
         "{{ config_file }}" \
         "{{ sample_config_file }}" \
         "{{ justfile_dir() }}/pyproject.toml" \
@@ -140,6 +150,7 @@ tidy-preconditions:
     test -f "{{ justfile_dir() }}/uv.lock"
     test -f "{{ justfile_dir() }}/justfile"
     test -f "{{ mise_fragment }}"
+    test -f "{{ schema_file }}"
     test -f "{{ justfile_dir() }}/.renovaterc.json5"
     compgen -G "{{ justfile_dir() }}/.github/workflows/template-*.yaml" > /dev/null
 
