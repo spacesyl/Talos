@@ -24,7 +24,7 @@ jobs:
       contents: read
     services:
       git:
-        image: ghcr.io/charmbracelet/soft-serve:v0.12.3
+        image: ghcr.io/charmbracelet/soft-serve:v0.12.4
         env:
           SOFT_SERVE_GIT_ENABLED: "false"
           SOFT_SERVE_LFS_ENABLED: "false"
@@ -58,8 +58,6 @@ jobs:
 
       - name: Setup mise
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
-        env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 
       - name: Boot maintenance-mode nodes
         id: cluster
