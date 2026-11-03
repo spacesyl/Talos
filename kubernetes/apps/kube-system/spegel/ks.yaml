@@ -5,6 +5,7 @@ metadata:
   name: spegel
 spec:
   interval: 1h
+  patches: []
   path: ./kubernetes/apps/kube-system/spegel/app
   postBuild:
     substituteFrom:
