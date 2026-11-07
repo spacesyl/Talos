@@ -1,4 +1,4 @@
-min_version = "2026.10.18"
+min_version = "2026.11.3"
 monorepo_root = true
 
 [env]
@@ -27,7 +27,7 @@ sops = "3.13.3"
 talosctl = "1.14.5"
 "github:postfinance/topf" = "v0.6.2"
 yq = "4.54.1"
-zizmor = "1.31.1"
+zizmor = "1.32.0"
 
 [tasks.log]
 hide = true
