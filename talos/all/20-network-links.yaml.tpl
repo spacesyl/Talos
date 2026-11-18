@@ -3,7 +3,7 @@ apiVersion: v1alpha1
 kind: LinkAliasConfig
 name: ethSel0
 selector:
-  match: 'glob("{{ .Node.Data.macAddr }}", mac(size(link.permanent_addr) > 0 ? link.permanent_addr : link.hardware_addr))'
+  match: 'mac(link.permanent_addr) == "{{ .Node.Data.macAddr }}" || (mac(link.hardware_addr) == "{{ .Node.Data.macAddr }}" && (link.slave_kind != "bond" || link.alias == "ethSel0"))'
 ---
 apiVersion: v1alpha1
 kind: BondConfig
