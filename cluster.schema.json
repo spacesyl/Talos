@@ -35,7 +35,17 @@
       "type": "object"
     },
     "Asn": {
-      "type": "string"
+      "anyOf": [
+        {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "pattern": "^[0-9]+$",
+          "type": "string"
+        }
+      ]
     },
     "Bgp": {
       "additionalProperties": false,
@@ -49,21 +59,68 @@
             {
               "const": "",
               "type": "string"
+            },
+            {
+              "type": "null"
             }
           ],
-          "default": "",
+          "default": null,
           "title": "Router Addr"
         },
         "router_asn": {
-          "$ref": "#/$defs/Asn",
-          "default": ""
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Asn"
+            },
+            {
+              "const": "",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "node_asn": {
-          "$ref": "#/$defs/Asn",
-          "default": ""
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Asn"
+            },
+            {
+              "const": "",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "title": "Bgp",
+      "type": "object"
+    },
+    "Certs": {
+      "additionalProperties": false,
+      "properties": {
+        "cluster_issuer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/K8sName"
+            },
+            {
+              "const": "",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Certs",
       "type": "object"
     },
     "Cidr": {
@@ -79,12 +136,25 @@
           "title": "Loadbalancer Mode",
           "type": "string"
         },
+        "announce": {
+          "anyOf": [
+            {
+              "enum": ["l2", "bgp", "none"],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Announce"
+        },
         "bgp": {
           "$ref": "#/$defs/Bgp",
           "default": {
-            "router_addr": "",
-            "router_asn": "",
-            "node_asn": ""
+            "router_addr": null,
+            "router_asn": null,
+            "node_asn": null
           }
         }
       },
@@ -113,32 +183,81 @@
       "additionalProperties": false,
       "properties": {
         "name": {
-          "$ref": "#/$defs/Fqdn"
+          "$ref": "#/$defs/DomainName"
         }
       },
       "required": ["name"],
       "title": "Domain",
       "type": "object"
     },
-    "Fqdn": {
+    "DomainName": {
+      "maxLength": 230,
       "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}$",
       "type": "string"
+    },
+    "Gateway": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": ["address"]
+        },
+        {
+          "required": ["load_balancer_class"]
+        }
+      ],
+      "properties": {
+        "address": {
+          "anyOf": [
+            {
+              "format": "ipv4",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "load_balancer_class": {
+          "anyOf": [
+            {
+              "pattern": "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Load Balancer Class"
+        }
+      },
+      "title": "Gateway",
+      "type": "object"
+    },
+    "GatewaySpec": {
+      "anyOf": [
+        {
+          "format": "ipv4",
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/Gateway"
+        }
+      ]
     },
     "Gateways": {
       "additionalProperties": false,
       "properties": {
         "internal": {
-          "format": "ipv4",
-          "title": "Internal",
-          "type": "string"
+          "$ref": "#/$defs/GatewaySpec"
         },
         "dns": {
-          "format": "ipv4",
-          "title": "Dns",
-          "type": "string"
+          "$ref": "#/$defs/GatewaySpec"
         },
         "external": {
-          "$ref": "#/$defs/OptionalIPv4Address",
+          "$ref": "#/$defs/OptionalGatewaySpec",
           "default": null
         }
       },
@@ -159,6 +278,11 @@
       "title": "Ingress",
       "type": "object"
     },
+    "K8sName": {
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+      "type": "string"
+    },
     "Kubernetes": {
       "additionalProperties": false,
       "properties": {
@@ -171,9 +295,17 @@
           "default": "10.43.0.0/16"
         },
         "coredns_addr": {
-          "format": "ipv4",
-          "title": "Coredns Addr",
-          "type": "string"
+          "anyOf": [
+            {
+              "format": "ipv4",
+              "type": "string"
+            },
+            {
+              "const": "",
+              "type": "string"
+            }
+          ],
+          "title": "Coredns Addr"
         },
         "api": {
           "$ref": "#/$defs/Api"
@@ -195,6 +327,7 @@
             "format": "ipv4",
             "type": "string"
           },
+          "minItems": 1,
           "title": "Dns Servers",
           "type": "array"
         },
@@ -204,26 +337,37 @@
             "format": "ipv4",
             "type": "string"
           },
+          "minItems": 1,
           "title": "Ntp Servers",
           "type": "array"
         },
         "default_gateway": {
-          "format": "ipv4",
-          "title": "Default Gateway",
-          "type": "string"
+          "anyOf": [
+            {
+              "format": "ipv4",
+              "type": "string"
+            },
+            {
+              "const": "",
+              "type": "string"
+            }
+          ],
+          "title": "Default Gateway"
         },
         "vlan_tag": {
           "anyOf": [
             {
-              "pattern": "^[0-9]+$",
+              "$ref": "#/$defs/VlanTag"
+            },
+            {
+              "const": "",
               "type": "string"
             },
             {
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Vlan Tag"
+          "default": null
         }
       },
       "required": ["node_cidr"],
@@ -248,6 +392,7 @@
           "type": "boolean"
         },
         "disk": {
+          "minLength": 1,
           "title": "Disk",
           "type": "string"
         },
@@ -257,7 +402,18 @@
           "type": "string"
         },
         "schematic_id": {
-          "$ref": "#/$defs/OptionalSchematicId",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchematicId"
+            },
+            {
+              "const": "",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null
         },
         "mtu": {
@@ -280,6 +436,7 @@
         "kernel_modules": {
           "default": [],
           "items": {
+            "pattern": "^[A-Za-z0-9_-]+$",
             "type": "string"
           },
           "title": "Kernel Modules",
@@ -290,25 +447,14 @@
       "title": "Node",
       "type": "object"
     },
-    "OptionalIPv4Address": {
+    "OptionalGatewaySpec": {
       "anyOf": [
         {
           "format": "ipv4",
           "type": "string"
         },
         {
-          "const": "",
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "OptionalSchematicId": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/SchematicId"
+          "$ref": "#/$defs/Gateway"
         },
         {
           "const": "",
@@ -344,6 +490,7 @@
             }
           ],
           "default": null,
+          "description": "Defaults to \"github\", or \"none\" when ingress.mode is \"none\" or the wildcard certificate comes from the in-cluster CA.",
           "title": "Webhook Provider"
         },
         "known_hosts": {
@@ -363,13 +510,14 @@
           "type": "string"
         },
         {
+          "maxLength": 253,
           "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}$",
           "type": "string"
         }
       ]
     },
     "SchematicId": {
-      "pattern": "^[a-z0-9]{64}$",
+      "pattern": "^[0-9a-f]{64}$",
       "type": "string"
     },
     "Spegel": {
@@ -395,12 +543,36 @@
       "additionalProperties": false,
       "properties": {
         "schematic_id": {
-          "$ref": "#/$defs/OptionalSchematicId",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchematicId"
+            },
+            {
+              "const": "",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null
         }
       },
       "title": "Talos",
       "type": "object"
+    },
+    "VlanTag": {
+      "anyOf": [
+        {
+          "maximum": 4094,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "pattern": "^[0-9]+$",
+          "type": "string"
+        }
+      ]
     }
   },
   "additionalProperties": false,
@@ -426,14 +598,21 @@
     "ingress": {
       "$ref": "#/$defs/Ingress"
     },
+    "certs": {
+      "$ref": "#/$defs/Certs",
+      "default": {
+        "cluster_issuer": null
+      }
+    },
     "cilium": {
       "$ref": "#/$defs/Cilium",
       "default": {
         "loadbalancer_mode": "dsr",
+        "announce": null,
         "bgp": {
-          "node_asn": "",
-          "router_addr": "",
-          "router_asn": ""
+          "node_asn": null,
+          "router_addr": null,
+          "router_asn": null
         }
       }
     },
@@ -453,6 +632,7 @@
       "items": {
         "$ref": "#/$defs/Node"
       },
+      "minItems": 1,
       "title": "Nodes",
       "type": "array"
     }

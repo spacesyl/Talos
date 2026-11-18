@@ -1,3 +1,4 @@
+#% if gateway_addresses %#
 ---
 apiVersion: cilium.io/v2
 kind: CiliumLoadBalancerIPPool
@@ -5,8 +6,24 @@ metadata:
   name: pool
 spec:
   allowFirstLastIPs: "No"
+  # Only the gateway VIPs, and only for the gateway Services: handing out
+  # node_cidr addresses would let a new LoadBalancer Service claim (and
+  # announce) the router, a node or a DHCP client's IP, and an open pool
+  # would let it take a gateway VIP first. For your own LoadBalancer
+  # Services, add a second pool with a free range and no serviceSelector;
+  # existing ones lose their node_cidr address until it covers them.
+  serviceSelector:
+    matchExpressions:
+      - { key: io.kubernetes.service.namespace, operator: In, values: ["network"] }
+      - key: io.kubernetes.service.name
+        operator: In
+        values: ["envoy-external", "envoy-internal", "k8s-gateway"]
   blocks:
-    - cidr: "#{ network.node_cidr }#"
+    #% for address in gateway_addresses %#
+    - cidr: "#{ address }#/32"
+    #% endfor %#
+#% endif %#
+#% if cilium.announce != 'none' %#
 ---
 apiVersion: cilium.io/v2alpha1
 kind: CiliumL2AnnouncementPolicy
@@ -22,6 +39,7 @@ spec:
   nodeSelector:
     matchLabels:
       kubernetes.io/os: linux
+#% endif %#
 #% if cilium_bgp_enabled %#
 ---
 apiVersion: cilium.io/v2
