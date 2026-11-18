@@ -37,6 +37,7 @@ INVALID_REASONS = {
     "missing-schematic": r"nodes\[0\]\.schematic_id is required",
     "nested-cidr-overlap": r"node_cidr 10\.42\.128\.0/17 overlaps kubernetes\.pod_cidr 10\.42\.0\.0/16",
     "node-addr-outside-cidr": r"nodes\[0\]\.address 192\.168\.1\.100 is not inside node_cidr",
+    "no-controller": r"at least one node must have controller = true",
     "node-uses-gateway-addr": r"used by both network\.default_gateway and nodes\[0\]\.address",
     "non-canonical-cidr": r"has host bits set; did you mean 10\.10\.10\.0/24",
     "overlapping-cidrs": r"node_cidr 10\.42\.0\.0/16 overlaps kubernetes\.pod_cidr 10\.42\.0\.0/16",
@@ -56,12 +57,24 @@ REJECTIONS = {
     "token-without-dns-provider": ("internal.toml", "dns.token", "fake", r"token must be empty when dns\.provider is 'none'"),
     "non-decimal-asn": ("public.toml", "cilium.bgp.node_asn", "AS64514", r"'AS64514' must be a decimal ASN"),
     "bad-domain-name": ("private.toml", "domain.name", "Example.com", r"domain\.name: String should match pattern"),
-    "bad-tls-san": ("public.toml", "kubernetes.api.tls_sans", ["not a hostname"], r"kubernetes\.api\.tls_sans\.0: String should match pattern"),
+    "bad-tls-san": ("public.toml", "kubernetes.api.tls_sans", ["not a hostname"], r"kubernetes\.api\.tls_sans\.0: 'not a hostname' is not a hostname or IPv4 address"),
     "bad-node-name": ("private.toml", "nodes.0.name", "k8s-0-", r"nodes\.0\.name: String should match pattern"),
     "mtu-too-small": ("private.toml", "nodes.0.mtu", 1449, r"nodes\.0\.mtu: Input should be greater than or equal to 1450"),
     "mtu-too-large": ("private.toml", "nodes.0.mtu", 9001, r"nodes\.0\.mtu: Input should be less than or equal to 9000"),
     "bad-schematic-id": ("private.toml", "nodes.0.schematic_id", "376567", r"nodes\.0\.schematic_id: String should match pattern"),
     "duplicate-mac-address": ("private.toml", "nodes.1.mac_addr", "00:00:00:00:00:00", r"duplicate node MAC address '00:00:00:00:00:00' on nodes\[0\] and nodes\[1\]"),
+    "empty-disk": ("private.toml", "nodes.0.disk", "", r"nodes\.0\.disk: disk must be a device path"),
+    "bare-disk-name-sd": ("private.toml", "nodes.0.disk", "sda", r"'sda' looks like a kernel device name, not a disk serial; did you mean '/dev/sda'\?"),
+    "bare-disk-name-vd": ("private.toml", "nodes.0.disk", "vda", r"did you mean '/dev/vda'\?"),
+    "bare-disk-name-hd": ("private.toml", "nodes.0.disk", "hdb", r"did you mean '/dev/hdb'\?"),
+    "bare-disk-name-xvd": ("private.toml", "nodes.0.disk", "xvda", r"did you mean '/dev/xvda'\?"),
+    "bare-disk-name-nvme": ("private.toml", "nodes.0.disk", "nvme0n1", r"did you mean '/dev/nvme0n1'\?"),
+    "bare-disk-name-mmcblk": ("private.toml", "nodes.0.disk", "mmcblk0", r"did you mean '/dev/mmcblk0'\?"),
+    "bare-disk-name-partition": ("private.toml", "nodes.0.disk", "nvme0n1p1", r"did you mean '/dev/nvme0n1p1'\?"),
+    "api-addr-on-controller-without-opt-out": ("single-node.toml", "kubernetes.api.addr", "10.10.10.100", r"kubernetes\.api\.addr 10\.10\.10\.100 is a node address: .* set kubernetes\.api\.vip = false"),
+    "api-addr-on-worker": ("private.toml", "kubernetes.api.addr", "10.10.10.101", r"kubernetes\.api\.addr 10\.10\.10\.101 is a node address"),
+    "no-vip-with-unused-addr": ("single-node.toml", "kubernetes.api.vip", False, r"kubernetes\.api\.vip = false requires exactly one controller with kubernetes\.api\.addr set to its address \(controllers: 10\.10\.10\.100\)"),
+    "no-vip-with-several-controllers": ("multi-controller.toml", "kubernetes.api.vip", False, r"kubernetes\.api\.vip = false requires exactly one controller"),
     "ssh-port-unknown-host": ("private.toml", "repository.url", "ssh://git@git.example.com:2222/k8s/home-ops.git", r"known_hosts is required for ssh:// URLs to 'git\.example\.com'"),
 }
 
@@ -114,6 +127,11 @@ def test_ssh_port_on_bundled_host_needs_no_known_hosts():
     assert _load_raw(raw).repository.known_hosts == ""
 
 
+@pytest.mark.parametrize("disk", ["/dev/nvme0n1", "/dev/disk/by-id/nvme-Samsung_SSD_980_S64DNX0R123456", "S64DNX0R123456", "sdfake-serial-01"])
+def test_disk_paths_and_serials_accepted(disk: str):
+    assert _load_raw(config_from("private.toml", **{"nodes.0.disk": disk})).nodes[0].disk == disk
+
+
 def test_cluster_issuer_follows_dns_provider():
     public = _load_raw(config_from("public.toml")).model_dump(mode="json")
     assert public["cluster_issuer"] == "letsencrypt-production"
@@ -158,6 +176,24 @@ def test_controller_count_ignores_workers():
     assert _load_raw(raw).controller_count == 2
 
 
+def test_at_least_one_controller_required():
+    raw = config_from("private.toml")
+    raw["nodes"] = []
+    with pytest.raises(ConfigError, match="at least one node must have controller = true"):
+        _load_raw(raw)
+
+
+def test_leading_zeros_stripped_from_yaml_integers():
+    # These render unquoted into YAML, where a leading zero means octal.
+    raw = config_from("public.toml", **{"network.vlan_tag": "0100", "cilium.bgp.node_asn": "064514"})
+    data = _load_raw(raw).model_dump(mode="json")
+    assert data["network"]["vlan_tag"] == "100"
+    assert data["cilium"]["bgp"]["node_asn"] == "64514"
+    raw = config_from("public.toml", **{"network.vlan_tag": "0000"})
+    with pytest.raises(ConfigError, match="vlan_tag 0 must be in the range 1-4094"):
+        _load_raw(raw)
+
+
 def test_derived_fields_are_not_settable():
     raw = config_from("public.toml", cilium_bgp_enabled=True)
     with pytest.raises(ConfigError, match="cilium_bgp_enabled"):
@@ -181,6 +217,26 @@ def test_ingress_mode_follows_dns_provider():
     assert (REPO_ROOT / ".github/template-tests/valid/internal.toml").exists()
     assert "ingress" not in internal
     assert _load_raw(internal).ingress.mode == "none"
+
+
+def test_webhook_provider_follows_ingress_mode():
+    assert _load_raw(config_from("public.toml")).repository.webhook_provider == "github"
+    assert _load_raw(config_from("internal.toml")).repository.webhook_provider == "none"
+    lan_git = config_from("internal.toml", **{"repository.webhook_provider": "generic-hmac"})
+    assert _load_raw(lan_git).repository.webhook_provider == "generic-hmac"
+
+
+def test_single_controller_may_serve_api_on_own_address():
+    assert _load_raw(config_from("single-node.toml")).kubernetes.api.vip is True
+    cfg = _load_raw(config_from("single-node-no-vip.toml", **{"kubernetes.api.tls_sans": None}))
+    assert cfg.kubernetes.api.vip is False
+    assert cfg.cert_sans == ["127.0.0.1", "10.10.10.100"]
+
+
+def test_tls_sans_accept_ip_addresses_without_duplicates():
+    sans = ["k8s.example.com", "100.64.0.10", "127.0.0.1", "10.10.10.254", "k8s.example.com"]
+    raw = config_from("private.toml", **{"kubernetes.api.tls_sans": sans})
+    assert _load_raw(raw).cert_sans == ["127.0.0.1", "10.10.10.254", "k8s.example.com", "100.64.0.10"]
 
 
 def test_direct_mode_requires_cloudflare_dns():

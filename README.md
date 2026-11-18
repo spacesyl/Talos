@@ -9,7 +9,7 @@ At its core, this project uses [makejinja](https://github.com/mirkolenz/makejinj
 A Kubernetes cluster deployed with [Talos Linux](https://github.com/siderolabs/talos) and an opinionated implementation of [Flux](https://github.com/fluxcd/flux2) syncing from the Git provider of your choice (GitHub, GitLab, Gitea, Forgejo, Codeberg or self-hosted), [sops](https://github.com/getsops/sops) to manage secrets and [cloudflared](https://github.com/cloudflare/cloudflared) to access applications external to your local network.
 
 - **Required:** Some knowledge of [Containers](https://opencontainers.org/), [YAML](https://noyaml.com/), [Git](https://git-scm.com/), and a **domain**. Exposing apps to the public internet requires a **Cloudflare account**; internal-only clusters don't.
-- **Included components:** [flux](https://github.com/fluxcd/flux2), [cilium](https://github.com/cilium/cilium), [cert-manager](https://github.com/cert-manager/cert-manager), [spegel](https://github.com/spegel-org/spegel), [reloader](https://github.com/stakater/Reloader), [coredns](https://github.com/coredns/coredns), [metrics-server](https://github.com/kubernetes-sigs/metrics-server), [k8s_gateway](https://github.com/k8s-gateway/k8s_gateway), [envoy-gateway](https://github.com/envoyproxy/gateway), [external-dns](https://github.com/kubernetes-sigs/external-dns) and [cloudflared](https://github.com/cloudflare/cloudflared).
+- **Included components:** [flux](https://github.com/fluxcd/flux2), [cilium](https://github.com/cilium/cilium), [cert-manager](https://github.com/cert-manager/cert-manager), [spegel](https://github.com/spegel-org/spegel), [reloader](https://github.com/stakater/Reloader), [coredns](https://github.com/coredns/coredns), [metrics-server](https://github.com/kubernetes-sigs/metrics-server) and [prometheus-operator-crds](https://github.com/prometheus-community/helm-charts/tree/main/charts/prometheus-operator-crds). The template also includes [k8s_gateway](https://github.com/k8s-gateway/k8s_gateway), [envoy-gateway](https://github.com/envoyproxy/gateway), [external-dns](https://github.com/kubernetes-sigs/external-dns) and [cloudflared](https://github.com/cloudflare/cloudflared) for DNS and ingress.
 
 **Other features include:**
 
@@ -217,7 +217,7 @@ These guidelines are a baseline, not a guarantee: **test and benchmark** your ha
 
 ### 🌐 Public DNS
 
-📍 _Only applies when `ingress.mode` is `"cloudflare-tunnel"` or `"direct"`. With `"none"` there is no `envoy-external` gateway or public DNS: `echo` and `flux-webhook` use `envoy-internal` and resolve only through [Home DNS](#-home-dns)._
+📍 _Only applies when `ingress.mode` is `"cloudflare-tunnel"` or `"direct"`. With `"none"` there is no `envoy-external` gateway or public DNS: `echo` uses `envoy-internal` and resolves only through [Home DNS](#-home-dns), and `flux-webhook` is skipped unless you set `webhook_provider` explicitly (e.g. for a Git host on your LAN)._
 
 > [!TIP]
 > Use the `envoy-external` gateway on `HTTPRoutes` to make applications public to the internet. These are also accessible on your private network once you set up split DNS.

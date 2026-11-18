@@ -7,8 +7,8 @@
 [network]
 
 # The CIDR block your nodes' IPs come from. Every node's `address`, the Kube
-# API VIP, and the gateway VIPs (internal/dns/external) must all sit inside
-# this range.
+# API address, and the gateway VIPs (internal/dns/external) must all sit
+# inside this range.
 # REQUIRED. Example: "192.168.1.0/24"
 node_cidr = ""
 
@@ -72,22 +72,32 @@ node_cidr = ""
 
 # Virtual IP for the Kubernetes API server. kubectl, flux, and every other
 # client connect here on port 6443. Must be an unused IP inside
-# network.node_cidr — kube-vip floats it across controller nodes.
+# network.node_cidr — Talos floats it across controller nodes as a Layer 2
+# VIP. With `vip = false`, set it to the sole controller's own address.
 # REQUIRED.
 addr = ""
 
+# Announce `addr` as a Layer 2 VIP. Set to false only on a cluster with
+# exactly one controller that has no spare IP for a VIP (e.g. a VPS with a
+# single IP); `addr` must then be that controller's address.
+# OPTIONAL. Default: true
+
+# vip = true
+
 # Additional Subject Alternative Names to put on the Kube API cert. Useful
 # if you want to call the API by hostname (e.g. via a CNAME or local
-# /etc/hosts entry) instead of the raw IP.
-# OPTIONAL. Example: ["mycluster.example.com"]
+# /etc/hosts entry) or by another IP (e.g. a Tailscale address) instead of
+# kubernetes.api.addr.
+# OPTIONAL. Example: ["mycluster.example.com", "100.64.0.10"]
 
 # tls_sans = ["mycluster.example.com"]
 
 
 # =============================================================================
 #    LoadBalancer IPs that Cilium hands out to the cluster's edge gateways.
-#    Each must be an unused address inside network.node_cidr, and all four
-#    (these three plus kubernetes.api.addr) must be distinct.
+#    Each must be an unused address inside network.node_cidr, distinct
+#    from each other, from every node's address, and from
+#    kubernetes.api.addr.
 # =============================================================================
 [gateways]
 
@@ -142,7 +152,9 @@ url = ""
 # HMAC; see https://fluxcd.io/flux/components/notification/receivers/
 # Use "none" to skip the webhook entirely (e.g. your Git host cannot reach
 # the cluster); Flux then only polls on an interval.
-# OPTIONAL. Default: "github".
+# With ingress.mode = "none" the webhook is only reachable on your LAN, so
+# the default flips to "none"; set it explicitly for a Git host on your LAN.
+# OPTIONAL. Default: "github", or "none" when ingress.mode is "none".
 # Allowed: "github" | "gitlab" | "generic-hmac" | "none"
 
 # webhook_provider = "github"
@@ -279,7 +291,9 @@ schematic_id = ""
 # name         = "k8s-0"        # Hostname; must match [a-z0-9-]+ (not "global"/"controller"/"worker").
 # address      = "192.168.1.10" # Static IP; must be inside network.node_cidr.
 # controller   = true           # true = control-plane (etcd + API server), false = worker.
-# disk         = "/dev/nvme0n1" # Block device or /dev/disk/by-id/... symlink to install Talos onto.
+# disk         = "/dev/nvme0n1" # Install disk: a /dev/... block device, a /dev/disk/by-id/... symlink,
+#                               # or a disk serial (no leading "/", e.g. "S64DNX0R123456"; see the
+#                               # SERIAL column of `talosctl get disks`). Bare names like "nvme0n1" are rejected.
 # mac_addr     = "aa:bb:cc:dd:ee:ff"  # Primary NIC MAC.
 #
 # # Optional when [talos] sets a cluster-wide default:

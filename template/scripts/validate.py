@@ -24,7 +24,9 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    WithJsonSchema,
     computed_field,
+    field_validator,
     model_validator,
 )
 
@@ -59,6 +61,19 @@ def _asn(value: str) -> str:
         raise ValueError(f"{value!r} must be a decimal ASN")
     if not 1 <= int(value) <= 4294967295:
         raise ValueError(f"{value!r} must be in the range 1-4294967295")
+    # Strip leading zeros: the value is rendered unquoted into YAML, where
+    # "064514" would be read as octal.
+    return str(int(value))
+
+
+# IPv4Address | Fqdn would report two errors with an unreadable union path;
+# one message naming both accepted forms is clearer.
+def _san(value: str) -> str:
+    try:
+        IPv4Address(value)
+    except ValueError:
+        if not re.fullmatch(FQDN_PATTERN, value):
+            raise ValueError(f"{value!r} is not a hostname or IPv4 address") from None
     return value
 
 
@@ -69,6 +84,11 @@ def _empty_to_none(value: Any) -> Any:
 type Cidr = Annotated[IPv4Network, BeforeValidator(_network)]
 type Asn = Annotated[str, AfterValidator(_asn)]
 type Fqdn = Annotated[str, Field(pattern=FQDN_PATTERN)]
+type San = Annotated[
+    str,
+    AfterValidator(_san),
+    WithJsonSchema({"anyOf": [{"type": "string", "format": "ipv4"}, {"type": "string", "pattern": FQDN_PATTERN}]}),
+]
 type SchematicId = Annotated[str, Field(pattern=r"^[a-z0-9]{64}$")]
 
 # An empty string means unset, so placeholders left in cluster.toml validate
@@ -97,6 +117,13 @@ class Network(Model):
     )
     vlan_tag: str | None = Field(default=None, pattern=r"^[0-9]+$")
 
+    # Strip leading zeros: the tag is rendered unquoted into YAML, where
+    # "0100" would be read as octal (VLAN 64).
+    @field_validator("vlan_tag")
+    @classmethod
+    def _decimal_vlan_tag(cls, value: str | None) -> str | None:
+        return None if value is None else str(int(value))
+
     @model_validator(mode="after")
     def check(self) -> Self:
         if self.default_gateway not in self.node_cidr:
@@ -110,7 +137,10 @@ class Network(Model):
 
 class Api(Model):
     addr: IPv4Address
-    tls_sans: list[Fqdn] | None = None
+    # False serves the API on the sole controller's own address (addr)
+    # instead of announcing a Layer 2 VIP.
+    vip: bool = True
+    tls_sans: list[San] | None = None
 
 
 class Kubernetes(Model):
@@ -141,7 +171,9 @@ class Gateways(Model):
 class Repository(Model):
     url: str = Field(pattern=REPO_URL_PATTERN)
     branch: str = Field(default="main", min_length=1)
-    webhook_provider: Literal["github", "gitlab", "generic-hmac", "none"] = "github"
+    # Defaults to "github", or "none" when ingress.mode is "none" (a hosted
+    # Git provider cannot reach the internal-only webhook route).
+    webhook_provider: Literal["github", "gitlab", "generic-hmac", "none"] | None = None
     known_hosts: str = ""
 
     @model_validator(mode="after")
@@ -208,11 +240,32 @@ class Cilium(Model):
     bgp: Bgp = Bgp()
 
 
+# Kernel block device names (optionally with a partition suffix). A disk value
+# without a leading "/" is matched against the disk serial, so a bare device
+# name would select no disk and the install would never start.
+KERNEL_DISK_NAME = re.compile(
+    r"^(?:(?:s|v|h|xv)d[a-z]+\d*|nvme\d+n\d+(?:p\d+)?|mmcblk\d+(?:p\d+)?)$"
+)
+
+
+def _disk(value: str) -> str:
+    if not value:
+        raise ValueError("disk must be a device path, a /dev/disk/by-id/ path or a disk serial")
+    if KERNEL_DISK_NAME.match(value):
+        raise ValueError(
+            f"{value!r} looks like a kernel device name, not a disk serial; "
+            f"did you mean '/dev/{value}'?"
+        )
+    return value
+
+
 class Node(Model):
     name: str = Field(pattern=r"^[a-z0-9][a-z0-9\-]{0,61}[a-z0-9]$|^[a-z0-9]$")
     address: IPv4Address
     controller: bool
-    disk: str
+    # A value starting with "/" is a device path or symlink; anything else is
+    # matched against the disk serial.
+    disk: Annotated[str, AfterValidator(_disk)]
     mac_addr: str = Field(pattern=r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
     # Falls back to talos.schematic_id when unset.
     schematic_id: OptionalSchematicId = None
@@ -274,12 +327,15 @@ class Config(Model):
     @computed_field
     @property
     def cert_sans(self) -> list[str]:
-        return ["127.0.0.1", str(self.kubernetes.api.addr), *(self.kubernetes.api.tls_sans or [])]
+        api = self.kubernetes.api
+        return list(dict.fromkeys(["127.0.0.1", str(api.addr), *(api.tls_sans or [])]))
 
     @model_validator(mode="after")
     def check(self) -> Self:
         if self.spegel.enabled is None:
             self.spegel.enabled = len(self.nodes) > 1
+        if self.repository.webhook_provider is None:
+            self.repository.webhook_provider = "none" if self.ingress.mode == "none" else "github"
         for i, node in enumerate(self.nodes):
             if node.schematic_id is None:
                 node.schematic_id = self.talos.schematic_id
@@ -288,6 +344,8 @@ class Config(Model):
                     f"nodes[{i}].schematic_id is required: set it on the node "
                     "or set a cluster-wide default in [talos]"
                 )
+        if self.controller_count == 0:
+            raise ValueError("at least one node must have controller = true")
         if self.ingress.mode != "none" and self.dns.provider != "cloudflare":
             raise ValueError(
                 f"ingress.mode {self.ingress.mode!r} requires dns.provider 'cloudflare'"
@@ -308,12 +366,28 @@ class Config(Model):
                 if cidrs[a].overlaps(cidrs[b]):
                     raise ValueError(f"{a} {cidrs[a]} overlaps {b} {cidrs[b]}")
 
+        api = self.kubernetes.api
+        if not api.vip:
+            controllers = [n.address for n in self.nodes if n.controller]
+            if controllers != [api.addr]:
+                raise ValueError(
+                    "kubernetes.api.vip = false requires exactly one controller with "
+                    "kubernetes.api.addr set to its address (controllers: "
+                    f"{', '.join(map(str, controllers))})"
+                )
+        elif any(n.address == api.addr for n in self.nodes):
+            raise ValueError(
+                f"kubernetes.api.addr {api.addr} is a node address: use an unused IP for "
+                "the API VIP, or set kubernetes.api.vip = false to serve the API on the "
+                "controller of a single-controller cluster"
+            )
         addresses = {
-            "kubernetes.api.addr": self.kubernetes.api.addr,
             "gateways.internal": self.gateways.internal,
             "gateways.dns": self.gateways.dns,
             "network.default_gateway": self.network.default_gateway,
         } | {f"nodes[{i}].address": n.address for i, n in enumerate(self.nodes)}
+        if api.vip:
+            addresses["kubernetes.api.addr"] = api.addr
         if self.gateways.external is not None:
             addresses["gateways.external"] = self.gateways.external
         seen: dict[IPv4Address, str] = {}
