@@ -63,6 +63,9 @@ REJECTIONS = {
     "huge-zero-padded-zero-vlan-tag": ("public.toml", "network.vlan_tag", "0" * 5000, r"network\.vlan_tag: '0+' must be in the range 1-4094"),
     "bad-domain-name": ("private.toml", "domain.name", "Example.com", r"domain\.name: String should match pattern"),
     "bad-tls-san": ("public.toml", "kubernetes.api.tls_sans", ["not a hostname"], r"kubernetes\.api\.tls_sans\.0: 'not a hostname' is not a hostname or IPv4 address"),
+    "numeric-tls-san": ("public.toml", "kubernetes.api.tls_sans", ["10.10.10.256"], r"kubernetes\.api\.tls_sans\.0: '10\.10\.10\.256' is not a hostname or IPv4 address"),
+    "single-label-domain": ("private.toml", "domain.name", "example", r"domain\.name: String should match pattern"),
+    "bad-idn-tld": ("private.toml", "domain.name", "example.xn--abc-", r"domain\.name: String should match pattern"),
     "bad-node-name": ("private.toml", "nodes.0.name", "k8s-0-", r"nodes\.0\.name: String should match pattern"),
     "mtu-too-small": ("private.toml", "nodes.0.mtu", 1449, r"nodes\.0\.mtu: Input should be greater than or equal to 1450"),
     "mtu-too-large": ("private.toml", "nodes.0.mtu", 9001, r"nodes\.0\.mtu: Input should be less than or equal to 9000"),
@@ -97,6 +100,12 @@ REJECTIONS = {
     "ssh-port-unknown-host": ("private.toml", "repository.url", "ssh://git@git.example.com:2222/k8s/home-ops.git", r"known_hosts is required for ssh:// URLs to 'git\.example\.com'"),
     "repo-url-with-credentials": ("public.toml", "repository.url", "https://user:token@github.com/onedr0p/home-ops.git", r"url must not embed credentials"),
     "repo-url-with-token": ("public.toml", "repository.url", "https://token@github.com/onedr0p/home-ops.git", r"url must not embed credentials"),
+    "repo-url-scp-style": ("public.toml", "repository.url", "ssh://git@github.com:onedr0p/home-ops.git", r"url host 'github\.com:onedr0p' must be a hostname with an optional numeric port"),
+    "repo-url-empty-port": ("public.toml", "repository.url", "https://github.com:/onedr0p/home-ops.git", r"url host 'github\.com:'"),
+    "repo-url-extra-user": ("public.toml", "repository.url", "ssh://git@user@github.com/onedr0p/home-ops.git", r"url host 'user@github\.com'"),
+    "ebgp-router-outside-node-cidr": ("public.toml", "cilium.bgp.router_addr", "10.10.1.1", r"cilium\.bgp\.router_addr 10\.10\.1\.1 is not inside node_cidr 10\.10\.10\.0/24: an eBGP peer"),
+    "pod-cidr-smaller-than-node-block": ("private.toml", "kubernetes.pod_cidr", "10.42.0.0/25", r"kubernetes\.pod_cidr 10\.42\.0\.0/25 is too small: each node gets a /24 from it, so 2 node\(s\) need at least a /23"),
+    "pod-cidr-fewer-blocks-than-nodes": ("private.toml", "kubernetes.pod_cidr", "10.42.0.0/24", r"kubernetes\.pod_cidr 10\.42\.0\.0/24 is too small"),
     "bad-kernel-module": ("private.toml", "nodes.0.kernel_modules", ["nvidia]"], r"nodes\.0\.kernel_modules\.0: String should match pattern"),
     "duplicate-kernel-module": ("private.toml", "nodes.0.kernel_modules", ["nvidia", "nvidia"], r"kernel_modules must not contain duplicates"),
 }
@@ -148,6 +157,20 @@ def test_override_rejected(fixture: str, key: str, value, reason: str):
 def test_ssh_port_on_bundled_host_needs_no_known_hosts():
     raw = config_from("private.toml", **{"repository.url": "ssh://git@github.com:22/onedr0p/cluster-template.git"})
     assert _load_raw(raw).repository.known_hosts == ""
+
+
+def test_ibgp_router_may_leave_node_cidr():
+    raw = config_from("public.toml", **{"cilium.bgp.router_addr": "10.10.1.1", "cilium.bgp.node_asn": 64513})
+    assert _load_raw(raw).cilium_bgp_enabled is True
+
+
+def test_pod_cidr_fits_one_block_per_node():
+    raw = config_from("private.toml", **{"kubernetes.pod_cidr": "10.42.0.0/23"})
+    assert len(raw["nodes"]) == 2
+    _load_raw(raw)
+    raw["nodes"] = raw["nodes"][:1]
+    raw["kubernetes"]["pod_cidr"] = "10.42.0.0/24"
+    _load_raw(raw)
 
 
 @pytest.mark.parametrize("module", ["nvidia-drm", "i2c_dev", "xt_TPROXY"])
@@ -365,6 +388,11 @@ def test_ingress_mode_follows_dns_provider():
     assert (REPO_ROOT / ".github/template-tests/valid/internal.toml").exists()
     assert "ingress" not in internal
     assert _load_raw(internal).ingress.mode == "none"
+    # The sample ships an [ingress] table with mode commented out.
+    assert _load_raw(config_from("public.toml", ingress={})).ingress.mode == "cloudflare-tunnel"
+    data = _load_raw(config_from("internal.toml", ingress={})).model_dump(mode="json")
+    assert data["ingress"]["mode"] == "none"
+    assert data["repository"]["webhook_provider"] == "none"
 
 
 def test_webhook_provider_follows_ingress_mode():
@@ -394,6 +422,13 @@ def test_tls_sans_accept_ip_addresses_without_duplicates():
     sans = ["k8s.example.com", "100.64.0.10", "127.0.0.1", "10.10.10.254", "k8s.example.com"]
     raw = config_from("private.toml", **{"kubernetes.api.tls_sans": sans})
     assert _load_raw(raw).cert_sans == ["127.0.0.1", "10.10.10.254", "k8s.example.com", "100.64.0.10"]
+
+
+def test_short_hostnames_and_idn_tlds_accepted():
+    raw = config_from("private.toml", **{"domain.name": "example.xn--p1ai", "kubernetes.api.tls_sans": ["k8s", "k8s.example.xn--p1ai"]})
+    cfg = _load_raw(raw)
+    assert cfg.domain.name == "example.xn--p1ai"
+    assert cfg.kubernetes.api.tls_sans == ["k8s", "k8s.example.xn--p1ai"]
 
 
 def test_empty_string_means_unset():
@@ -480,9 +515,21 @@ def test_gateway_accepts_load_balancer_class():
     assert cfg.cilium_node_ipam_enabled is True
     assert cfg.gateway_addresses == ["10.10.10.253"]
     data = cfg.model_dump(mode="json")
-    assert data["gateways"]["external"] == {"address": None, "load_balancer_class": "io.cilium/node"}
-    assert data["gateways"]["dns"] == {"address": "10.10.10.253", "load_balancer_class": None}
+    assert data["gateways"]["external"] == {"address": None, "load_balancer_class": "io.cilium/node", "node_ports": False}
+    assert data["gateways"]["dns"] == {"address": "10.10.10.253", "load_balancer_class": None, "node_ports": False}
     assert _load_raw(config_from("private.toml")).cilium_node_ipam_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("lb_class", "node_ports"),
+    [
+        ("tailscale", False),
+        ("example.com/cloud-lb", True),
+    ],
+)
+def test_gateway_node_ports_only_for_classes_that_need_them(lb_class: str, node_ports: bool):
+    raw = config_from("private.toml", **{"gateways.internal": {"load_balancer_class": lb_class}})
+    assert _load_raw(raw).gateways.internal.node_ports is node_ports
 
 
 @pytest.mark.parametrize("gateway", [{}, {"address": "10.10.10.252", "load_balancer_class": "tailscale"}])

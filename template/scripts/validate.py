@@ -58,7 +58,10 @@ DNS_LABEL = r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?"
 LB_CLASS_PATTERN = rf"^({DNS_LABEL}(\.{DNS_LABEL})*/)?[A-Za-z0-9]([-A-Za-z0-9_.]{{0,61}}[A-Za-z0-9])?$"
 # Cilium's own LB IPAM classes; gateways get LB IPAM through an address.
 CILIUM_LB_IPAM_CLASSES = ["io.cilium/l2-announcer", "io.cilium/bgp-control-plane"]
-FQDN_PATTERN = r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$"
+# At least two labels; the TLD is alphabetic or an IDN in punycode (xn--).
+FQDN_PATTERN = rf"^({DNS_LABEL}\.)+([a-z]{{2,63}}|xn--[a-z0-9]([-a-z0-9]{{0,57}}[a-z0-9])?)$"
+# A certificate SAN may also be a single label (a short hostname).
+HOSTNAME_PATTERN = rf"^({DNS_LABEL}\.)*{DNS_LABEL}$"
 # Leaves room within the 253-character DNS limit for the longest name derived
 # from it: ExternalDNS's ownership TXT record 'k8s.cname-flux-webhook.<domain>'.
 DOMAIN_MAX_LENGTH = 230
@@ -125,7 +128,8 @@ def _san(value: str) -> str:
     try:
         IPv4Address(value)
     except ValueError:
-        if len(value) > 253 or not re.fullmatch(FQDN_PATTERN, value):
+        # An all-numeric last label is a mistyped IPv4 address, not a name.
+        if len(value) > 253 or not re.fullmatch(HOSTNAME_PATTERN, value) or value.rpartition(".")[2].isdigit():
             raise ValueError(f"{value!r} is not a hostname or IPv4 address") from None
     return value
 
@@ -170,7 +174,7 @@ type San = Annotated[
     str,
     AfterValidator(_san),
     WithJsonSchema(
-        {"anyOf": [{"type": "string", "format": "ipv4"}, {"type": "string", "pattern": FQDN_PATTERN, "maxLength": 253}]}
+        {"anyOf": [{"type": "string", "format": "ipv4"}, {"type": "string", "pattern": HOSTNAME_PATTERN, "maxLength": 253}]}
     ),
 ]
 type SchematicId = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -266,6 +270,15 @@ class Gateway(Model):
     address: IPv4Address | None = None
     load_balancer_class: Annotated[str, Field(pattern=LB_CLASS_PATTERN), AfterValidator(_lb_class)] | None = None
 
+    # Whether the gateway's Service keeps its NodePorts. Cilium (an address
+    # or io.cilium/*) and the Tailscale operator, which proxies to the
+    # ClusterIP, do not use them; other load balancers often forward to them.
+    @computed_field
+    @property
+    def node_ports(self) -> bool:
+        lb_class = self.load_balancer_class
+        return lb_class not in (None, "tailscale") and not lb_class.startswith("io.cilium/")
+
     @model_validator(mode="after")
     def check(self) -> Self:
         if (self.address is None) == (self.load_balancer_class is None):
@@ -320,13 +333,21 @@ class Repository(Model):
 
     @model_validator(mode="after")
     def check(self) -> Self:
-        if self.url.startswith("http") and "@" in self.url.split("/", 3)[2]:
+        authority = self.url.split("/", 3)[2]
+        if self.url.startswith("http") and "@" in authority:
             raise ValueError(
                 "url must not embed credentials (they would be committed in plain text); "
                 "use an ssh://git@ URL with the generated deploy key for private repositories"
             )
+        # Flux (Go's url.Parse) only accepts a numeric port after the host.
+        host_port = authority.removeprefix("git@")
+        if not re.fullmatch(r"[^:@]+(:[0-9]+)?", host_port):
+            raise ValueError(
+                f"url host {host_port!r} must be a hostname with an optional numeric port; "
+                "write scp-style git@host:owner/repo as ssh://git@host/owner/repo"
+            )
         if self.uses_deploy_key:
-            host = self.url.removeprefix("ssh://git@").split("/", 1)[0].split(":", 1)[0]
+            host = host_port.split(":")[0]
             if host not in KNOWN_HOSTS and not self.known_hosts:
                 raise ValueError(
                     f"known_hosts is required for ssh:// URLs to {host!r} "
@@ -353,7 +374,10 @@ class Dns(Model):
 
 
 class Ingress(Model):
-    mode: Literal["cloudflare-tunnel", "direct", "none"] = "cloudflare-tunnel"
+    mode: Literal["cloudflare-tunnel", "direct", "none"] | None = Field(
+        default=None,
+        description='Defaults to "cloudflare-tunnel" when dns.provider is "cloudflare", otherwise "none".',
+    )
 
 
 class Certs(Model):
@@ -474,13 +498,7 @@ class Config(Model):
     repository: Repository
     domain: Domain
     dns: Dns
-    # Defaults to "cloudflare-tunnel" when dns.provider is "cloudflare",
-    # otherwise "none".
-    ingress: Ingress = Field(
-        default_factory=lambda data: Ingress(
-            mode="cloudflare-tunnel" if data["dns"].provider == "cloudflare" else "none"
-        )
-    )
+    ingress: Ingress = Ingress()
     certs: Certs = Certs()
     cilium: Cilium = Cilium()
     talos: Talos = Talos()
@@ -570,6 +588,8 @@ class Config(Model):
 
     @model_validator(mode="after")
     def check(self) -> Self:
+        if self.ingress.mode is None:
+            self.ingress.mode = "cloudflare-tunnel" if self.dns.provider == "cloudflare" else "none"
         bgp_configured = self.cilium.bgp.configured
         if self.cilium.announce is None:
             self.cilium.announce = "bgp" if bgp_configured else "l2"
@@ -608,6 +628,16 @@ class Config(Model):
         if self.ingress.mode != "none" and self.gateways.external is None:
             raise ValueError(
                 f"gateways.external is required when ingress.mode is {self.ingress.mode!r}"
+            )
+
+        # Cilium's kubernetes IPAM uses the /24 per node that
+        # kube-controller-manager carves out of pod_cidr.
+        pod_cidr = self.kubernetes.pod_cidr
+        if len(self.nodes) > 2 ** (24 - pod_cidr.prefixlen):
+            raise ValueError(
+                f"kubernetes.pod_cidr {pod_cidr} is too small: each node gets a /24 from it, "
+                f"so {len(self.nodes)} node(s) need at least a "
+                f"/{24 - (len(self.nodes) - 1).bit_length()}"
             )
 
         cidrs = {
@@ -711,6 +741,16 @@ class Config(Model):
         if self.kubernetes.api.addr not in node_cidr:
             raise ValueError(
                 f"kubernetes.api.addr {self.kubernetes.api.addr} is not inside node_cidr {node_cidr}"
+            )
+        # The rendered CiliumBGPPeerConfig sets no ebgpMultihop, so eBGP
+        # packets leave with TTL 1 and only reach a peer on node_cidr. iBGP
+        # is not limited to one hop.
+        bgp = self.cilium.bgp
+        if self.cilium_bgp_enabled and bgp.router_asn != bgp.node_asn and bgp.router_addr not in node_cidr:
+            raise ValueError(
+                f"cilium.bgp.router_addr {bgp.router_addr} is not inside node_cidr {node_cidr}: "
+                "an eBGP peer (router_asn != node_asn) must be directly connected; "
+                "use the router's address on node_cidr"
             )
         # Over L2 only addresses in the node network can be announced.
         if self.cilium.announce == "l2":
