@@ -38,7 +38,6 @@ INVALID_REASONS = {
     "non-canonical-cidr": r"has host bits set; did you mean 10\.10\.10\.0/24",
     "overlapping-cidrs": r"node_cidr 10\.42\.0\.0/16 overlaps kubernetes\.pod_cidr 10\.42\.0\.0/16",
     "partial-bgp": r"partially configured: set router_addr, router_asn and node_asn together \(missing: node_asn\)",
-    "reserved-node-name": r"node name 'controller' is reserved",
     "tiny-svc-cidr": r"coredns_addr 10\.43\.0\.10 is not inside svc_cidr 10\.43\.0\.0/29",
     "tunnel-without-dns": r"ingress\.mode 'cloudflare-tunnel' requires dns\.provider 'cloudflare'",
 }
@@ -47,6 +46,8 @@ INVALID_REASONS = {
 # (fixture, dotted key, value, expected error).
 REJECTIONS = {
     "invalid-cidr": ("private.toml", "network.node_cidr", "10.10.10.0/33", r"'10\.10\.10\.0/33' is not a valid IPv4 CIDR"),
+    "node-cidr-without-prefix": ("private.toml", "network.node_cidr", "10.10.10.0", r"network\.node_cidr: '10\.10\.10\.0' has no prefix length, e\.g\. 10\.10\.10\.0/24"),
+    "integer-cidr": ("private.toml", "network.node_cidr", 167772160, r"network\.node_cidr: '167772160' is not a valid IPv4 CIDR"),
     "default-gateway-outside-node-cidr": ("private.toml", "network.default_gateway", "10.10.11.1", r"default_gateway 10\.10\.11\.1 is not inside node_cidr 10\.10\.10\.0/24"),
     "api-addr-outside-node-cidr": ("private.toml", "kubernetes.api.addr", "10.10.11.254", r"kubernetes\.api\.addr 10\.10\.11\.254 is not inside node_cidr 10\.10\.10\.0/24"),
     "pod-svc-cidr-overlap": ("private.toml", "kubernetes.svc_cidr", "10.42.0.0/16", r"kubernetes\.pod_cidr 10\.42\.0\.0/16 overlaps kubernetes\.svc_cidr 10\.42\.0\.0/16"),
@@ -76,7 +77,14 @@ REJECTIONS = {
     "whitespace-token-without-dns-provider": ("internal.toml", "dns.token", " x ", r"token must be empty when dns\.provider is 'none'"),
     "empty-dns-servers": ("private.toml", "network.dns_servers", [], r"network\.dns_servers: List should have at least 1 item"),
     "empty-ntp-servers": ("private.toml", "network.ntp_servers", [], r"network\.ntp_servers: List should have at least 1 item"),
+    "loopback-dns-server": ("private.toml", "network.dns_servers", ["1.1.1.1", "127.0.0.1"], r"network\.dns_servers\[1\] 127\.0\.0\.1 is not usable \(unspecified, loopback or multicast\)"),
+    "multicast-ntp-server": ("private.toml", "network.ntp_servers", ["224.0.1.1"], r"network\.ntp_servers\[0\] 224\.0\.1\.1 is not usable"),
+    "dns-server-is-k8s-gateway": ("private.toml", "network.dns_servers", ["10.10.10.253"], r"network\.dns_servers\[0\] 10\.10\.10\.253 is gateways\.dns, which only answers once the cluster runs"),
+    "ntp-server-is-external-gateway": ("private.toml", "network.ntp_servers", ["10.10.10.251"], r"network\.ntp_servers\[0\] 10\.10\.10\.251 is gateways\.external"),
+    "dns-server-is-api-vip": ("private.toml", "network.dns_servers", ["10.10.10.254"], r"10\.10\.10\.254 is kubernetes\.api\.addr, which only answers once the cluster runs"),
+    "dns-server-in-svc-cidr": ("private.toml", "network.dns_servers", ["10.43.0.10"], r"network\.dns_servers\[0\] 10\.43\.0\.10 is inside kubernetes\.svc_cidr 10\.43\.0\.0/16"),
     "duplicate-mac-address": ("private.toml", "nodes.1.mac_addr", "00:00:00:00:00:00", r"duplicate node MAC address '00:00:00:00:00:00' on nodes\[0\] and nodes\[1\]"),
+    "duplicate-mac-address-dashes": ("private.toml", "nodes.1.mac_addr", "00-00-00-00-00-00", r"duplicate node MAC address '00:00:00:00:00:00' on nodes\[0\] and nodes\[1\]"),
     "empty-disk": ("private.toml", "nodes.0.disk", "", r"nodes\.0\.disk: String should have at least 1 character"),
     "disk-relative-dev-path": ("private.toml", "nodes.0.disk", "dev/nvme0n1", r"'dev/nvme0n1' is a relative path; did you mean '/dev/nvme0n1'\?"),
     "disk-relative-by-id": ("private.toml", "nodes.0.disk", "disk/by-id/nvme-x", r"did you mean '/dev/disk/by-id/nvme-x'\?"),
@@ -97,7 +105,22 @@ REJECTIONS = {
     "whitespace-branch": ("private.toml", "repository.branch", "  ", r"repository\.branch: String should have at least 1 character"),
     "bad-cluster-issuer": ("direct-custom-issuer.toml", "certs.cluster_issuer", "Acme_Production", r"certs\.cluster_issuer: String should match pattern"),
     "reserved-cluster-issuer": ("direct-custom-issuer.toml", "certs.cluster_issuer", "internal-ca", r"certs: cluster_issuer 'internal-ca' is reserved"),
-    "ssh-port-unknown-host": ("private.toml", "repository.url", "ssh://git@git.example.com:2222/k8s/home-ops.git", r"known_hosts is required for ssh:// URLs to 'git\.example\.com'"),
+    "ssh-port-unknown-host": ("private.toml", "repository.url", "ssh://git@git.example.com:2222/k8s/home-ops.git", r"known_hosts is required for ssh:// URLs to '\[git\.example\.com\]:2222'"),
+    "ssh-custom-port-bundled-host": ("private.toml", "repository.url", "ssh://git@github.com:2222/onedr0p/cluster-template.git", r"known_hosts is required for ssh:// URLs to '\[github\.com\]:2222' \(host keys are only bundled for .* on port 22\)"),
+    "known-hosts-wrong-port": ("selfhosted.toml", "repository.url", "ssh://git@git.example.com:2222/k8s/home-ops.git", r"known_hosts has no entry for '\[git\.example\.com\]:2222'; generate it with `ssh-keyscan -p 2222 git\.example\.com`"),
+    "known-hosts-wrong-host": ("selfhosted.toml", "repository.url", "ssh://git@git2.example.com/k8s/home-ops.git", r"known_hosts has no entry for 'git2\.example\.com'; generate it with `ssh-keyscan git2\.example\.com`"),
+    "known-hosts-junk": ("selfhosted.toml", "repository.known_hosts", "git.example.com", r"known_hosts line 'git\.example\.com' is not '<hosts> <key type> <key>'"),
+    "known-hosts-junk-with-bundled-host": ("private.toml", "repository.known_hosts", "github.com ssh-ed25519", r"known_hosts line 'github\.com ssh-ed25519' is not"),
+    "branch-with-quote": ("private.toml", "repository.branch", 'ma"in', r"repository\.branch: 'ma\"in' is not a valid git branch name"),
+    "branch-with-substitution": ("private.toml", "repository.branch", "${BRANCH}", r"is not a valid git branch name"),
+    "branch-with-dotdot": ("private.toml", "repository.branch", "main..dev", r"is not a valid git branch name"),
+    "branch-lock-suffix": ("private.toml", "repository.branch", "main.lock", r"is not a valid git branch name"),
+    "branch-full-ref": ("private.toml", "repository.branch", "refs/heads/main", r"repository\.branch: 'refs/heads/main' must be a branch name without the 'refs/heads/' prefix"),
+    "repo-url-with-quote": ("public.toml", "repository.url", 'https://github.com/onedr0p/home-ops".git', r"repository\.url: .* must not contain whitespace, control characters, double quotes, backslashes or '\$'"),
+    "repo-url-with-substitution": ("public.toml", "repository.url", "https://github.com/${OWNER}/home-ops.git", r"repository\.url: .* must not contain whitespace"),
+    "dns-token-with-quote": ("public.toml", "dns.token", 'fa"ke', r"dns\.token: 'fa\"ke' must not contain whitespace, control characters, double quotes, backslashes or '\$'"),
+    "dns-token-with-substitution": ("public.toml", "dns.token", "${TOKEN}", r"dns\.token: .* must not contain whitespace"),
+    "encrypt-disk-without-secureboot": ("private.toml", "nodes.1.secureboot", False, r"nodes\.1: encrypt_disk requires secureboot: TPM disk encryption needs a SecureBoot image"),
     "repo-url-with-credentials": ("public.toml", "repository.url", "https://user:token@github.com/onedr0p/home-ops.git", r"url must not embed credentials"),
     "repo-url-with-token": ("public.toml", "repository.url", "https://token@github.com/onedr0p/home-ops.git", r"url must not embed credentials"),
     "repo-url-scp-style": ("public.toml", "repository.url", "ssh://git@github.com:onedr0p/home-ops.git", r"url host 'github\.com:onedr0p' must be a hostname with an optional numeric port"),
@@ -159,6 +182,48 @@ def test_ssh_port_on_bundled_host_needs_no_known_hosts():
     assert _load_raw(raw).repository.known_hosts == ""
 
 
+KNOWN_HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
+
+# Hashed hosts and patterns are accepted unchecked.
+@pytest.mark.parametrize(
+    "hosts",
+    ["[git.example.com]:2222", "other.example.com,[git.example.com]:2222", "[*.example.com]:2222", "|1|c2FsdA==|aGFzaA=="],
+)
+def test_known_hosts_entry_for_custom_port_accepted(hosts: str):
+    raw = config_from(
+        "selfhosted.toml",
+        **{
+            "repository.url": "ssh://git@git.example.com:2222/k8s/home-ops.git",
+            "repository.known_hosts": f"# comment\n\n{hosts} {KNOWN_HOST_KEY}\n",
+        },
+    )
+    _load_raw(raw)
+
+
+def test_known_hosts_for_bundled_host_on_custom_port():
+    raw = config_from(
+        "private.toml",
+        **{
+            "repository.url": "ssh://git@github.com:2222/onedr0p/cluster-template.git",
+            "repository.known_hosts": f"[github.com]:2222 {KNOWN_HOST_KEY}",
+        },
+    )
+    _load_raw(raw)
+
+
+@pytest.mark.parametrize("branch", ["main", "feature/new-thing", "release-1.0", "renovate/flux-2.x", "user@dev"])
+def test_branch_names_accepted(branch: str):
+    assert _load_raw(config_from("private.toml", **{"repository.branch": branch})).repository.branch == branch
+
+
+def test_encrypt_disk_with_secureboot_accepted():
+    node = _load_raw(config_from("private.toml")).nodes[1]
+    assert (node.secureboot, node.encrypt_disk) == (True, True)
+    node = _load_raw(config_from("private.toml", **{"nodes.1.encrypt_disk": False, "nodes.1.secureboot": False})).nodes[1]
+    assert (node.secureboot, node.encrypt_disk) == (False, False)
+
+
 def test_ibgp_router_may_leave_node_cidr():
     raw = config_from("public.toml", **{"cilium.bgp.router_addr": "10.10.1.1", "cilium.bgp.node_asn": 64513})
     assert _load_raw(raw).cilium_bgp_enabled is True
@@ -191,6 +256,26 @@ def test_bare_kernel_disk_name_rejected(name: str):
         _load_raw(config_from("private.toml", **{"nodes.0.disk": name}))
 
 
+@pytest.mark.parametrize(
+    ("disk", "whole"),
+    [
+        ("/dev/sda1", "/dev/sda"),
+        ("/dev/nvme0n1p1", "/dev/nvme0n1"),
+        ("/dev/disk/by-id/nvme-Samsung_SSD_980_S64DNX0R123456-part1", "/dev/disk/by-id/nvme-Samsung_SSD_980_S64DNX0R123456"),
+        ("/dev/disk/by-path/pci-0000:00:1f.2-ata-1-part2", "/dev/disk/by-path/pci-0000:00:1f.2-ata-1"),
+    ],
+)
+def test_partition_disk_rejected(disk: str, whole: str):
+    with pytest.raises(ConfigError, match=rf"'{re.escape(disk)}' is a partition; Talos installs to a whole disk, e\.g\. '{re.escape(whole)}'"):
+        _load_raw(config_from("private.toml", **{"nodes.0.disk": disk}))
+
+
+@pytest.mark.parametrize("disk", ["/dev/disk/by-partuuid/0b8f2b5e-01", "/dev/disk/by-partlabel/EFI"])
+def test_partition_symlink_disk_rejected(disk: str):
+    with pytest.raises(ConfigError, match=rf"'{re.escape(disk)}' is a partition; Talos installs to a whole disk"):
+        _load_raw(config_from("private.toml", **{"nodes.0.disk": disk}))
+
+
 @pytest.mark.parametrize("disk", [" /dev/sda", "S64DNX0R123456 ", "ab\nc", "a\x85b", "a\u2028b", 'ab"c', "ab\\c", "ab: c", "ab #c"])
 def test_disk_with_unsafe_characters_rejected(disk: str):
     with pytest.raises(ConfigError, match="must not contain control characters, double quotes, backslashes"):
@@ -201,7 +286,11 @@ def test_disk_with_unsafe_characters_rejected(disk: str):
     "disk",
     [
         "/dev/nvme0n1",
+        "/dev/sda",
+        "/dev/mmcblk0",
+        "/dev/md0",
         "/dev/disk/by-id/nvme-Samsung_SSD_980_S64DNX0R123456",
+        "/dev/disk/by-id/wwn-0x5002538e40a0b1c2",
         "/dev/disk/by-path/pci-0000:00:1f.2-ata-1",
         "S64DNX0R123456",
         "sdfake-serial-01",
@@ -214,6 +303,21 @@ def test_disk_with_unsafe_characters_rejected(disk: str):
 )
 def test_disk_paths_and_serials_accepted(disk: str):
     assert _load_raw(config_from("private.toml", **{"nodes.0.disk": disk})).nodes[0].disk == disk
+
+
+@pytest.mark.parametrize("mac", ["AA:BB:CC:DD:EE:0F", "aa-bb-cc-dd-ee-0f", " Aa:bB:cc:dd:ee:0f "])
+def test_mac_address_normalised(mac: str):
+    assert _load_raw(config_from("private.toml", **{"nodes.0.mac_addr": mac})).nodes[0].mac_addr == "aa:bb:cc:dd:ee:0f"
+
+
+def test_dns_and_ntp_servers_may_be_lan_hosts():
+    # The router, a node or a link-local resolver are all reachable at boot.
+    raw = config_from("private.toml", **{"network.dns_servers": ["10.10.10.1", "10.10.10.101", "169.254.169.253"], "network.ntp_servers": ["10.10.10.1"]})
+    _load_raw(raw)
+
+
+def test_dns_server_may_reuse_unused_external_gateway_address():
+    _load_raw(config_from("internal.toml", **{"network.dns_servers": ["10.10.10.251"]}))
 
 
 def test_bgp_router_may_be_the_default_gateway():
@@ -530,6 +634,24 @@ def test_gateway_accepts_load_balancer_class():
 def test_gateway_node_ports_only_for_classes_that_need_them(lb_class: str, node_ports: bool):
     raw = config_from("private.toml", **{"gateways.internal": {"load_balancer_class": lb_class}})
     assert _load_raw(raw).gateways.internal.node_ports is node_ports
+
+
+@pytest.mark.parametrize(
+    ("gateways", "lb_uses_nodes"),
+    [
+        ({}, False),
+        ({"gateways.internal": {"load_balancer_class": "tailscale"}}, False),
+        ({"gateways.external": {"load_balancer_class": "io.cilium/node"}}, True),
+        ({"gateways.internal": {"load_balancer_class": "metallb.io/metallb"}}, True),
+    ],
+)
+def test_lb_uses_nodes(gateways: dict, lb_uses_nodes: bool):
+    assert _load_raw(config_from("private.toml", **gateways)).lb_uses_nodes is lb_uses_nodes
+
+
+def test_lb_uses_nodes_ignores_undeployed_gateways():
+    raw = config_from("internal.toml", **{"gateways.external": {"load_balancer_class": "metallb.io/metallb"}})
+    assert _load_raw(raw).lb_uses_nodes is False
 
 
 @pytest.mark.parametrize("gateway", [{}, {"address": "10.10.10.252", "load_balancer_class": "tailscale"}])

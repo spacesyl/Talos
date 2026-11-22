@@ -71,11 +71,14 @@ K8S_NAME_PATTERN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9
 
 
 def _network(value: Any) -> Any:
-    """Parse a CIDR, requiring network-address form (no host bits set)."""
+    """Parse a CIDR, requiring a prefix length and network-address form (no host bits set)."""
+    # pydantic would read a TOML integer as a /32 address.
+    if isinstance(value, int):
+        value = str(value)
     if not isinstance(value, str):
         return value
     try:
-        return IPv4Network(value)
+        network = IPv4Network(value)
     except ValueError:
         try:
             fixed = IPv4Network(value, strict=False)
@@ -84,6 +87,10 @@ def _network(value: Any) -> Any:
         raise ValueError(
             f"{value!r} has host bits set; did you mean {fixed}?"
         ) from None
+    # IPv4Network reads a bare address as a /32.
+    if "/" not in value:
+        raise ValueError(f"{value!r} has no prefix length, e.g. {value}/24")
+    return network
 
 
 def _bounded_int(lo: int, hi: int) -> Any:
@@ -131,6 +138,27 @@ def _san(value: str) -> str:
         # An all-numeric last label is a mistyped IPv4 address, not a name.
         if len(value) > 253 or not re.fullmatch(HOSTNAME_PATTERN, value) or value.rpartition(".")[2].isdigit():
             raise ValueError(f"{value!r} is not a hostname or IPv4 address") from None
+    return value
+
+
+# Interpolated into YAML double-quoted strings, which a '"' ends and a '\'
+# escape changes, and where Flux's postBuild substitution expands '${...}'.
+def _yaml_safe(value: str) -> str:
+    if re.search(r'[\s\x00-\x1f\x7f-\x9f"\\$]', value):
+        raise ValueError(
+            f"{value!r} must not contain whitespace, control characters, double quotes, "
+            "backslashes or '$'"
+        )
+    return value
+
+
+# Rendered as refs/heads/<branch>; a subset of git check-ref-format's rules
+# plus the characters _yaml_safe rejects.
+def _branch(value: str) -> str:
+    if value.startswith("refs/"):
+        raise ValueError(f"{value!r} must be a branch name without the 'refs/heads/' prefix")
+    if re.search(r'[\s\x00-\x1f\x7f-\x9f"\\$~^:?*\[]|\.\.|//|@\{|^/|/$|\.$|\.lock(/|$)|(^|/)\.', value):
+        raise ValueError(f"{value!r} is not a valid git branch name")
     return value
 
 
@@ -313,8 +341,8 @@ class Gateways(Model):
 
 
 class Repository(Model):
-    url: str = Field(pattern=REPO_URL_PATTERN)
-    branch: Stripped = Field(default="main", min_length=1)
+    url: Annotated[str, Field(pattern=REPO_URL_PATTERN), AfterValidator(_yaml_safe)]
+    branch: Annotated[Stripped, AfterValidator(_branch)] = Field(default="main", min_length=1)
     webhook_provider: Literal["github", "gitlab", "generic-hmac", "none"] | None = Field(
         default=None,
         description=(
@@ -347,11 +375,32 @@ class Repository(Model):
                 "write scp-style git@host:owner/repo as ssh://git@host/owner/repo"
             )
         if self.uses_deploy_key:
-            host = host_port.split(":")[0]
-            if host not in KNOWN_HOSTS and not self.known_hosts:
+            host, _, port = host_port.partition(":")
+            port = port or "22"
+            # Flux looks the host up as host on port 22, otherwise as
+            # [host]:port; the bundled keys are only for port 22.
+            name = host if port == "22" else f"[{host}]:{port}"
+            bundled = name in KNOWN_HOSTS
+            if not bundled and not self.known_hosts:
                 raise ValueError(
-                    f"known_hosts is required for ssh:// URLs to {host!r} "
-                    f"(host keys are only bundled for {', '.join(KNOWN_HOSTS)})"
+                    f"known_hosts is required for ssh:// URLs to {name!r} "
+                    f"(host keys are only bundled for {', '.join(KNOWN_HOSTS)} on port 22)"
+                )
+            lines = [
+                line.split() for line in self.known_hosts.splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+            for fields in lines:
+                if len(fields) < 3:
+                    raise ValueError(
+                        f"known_hosts line {' '.join(fields)!r} is not '<hosts> <key type> <key>'"
+                    )
+            hosts = {h for fields in lines for h in fields[0].split(",")}
+            # Hashed (|1|) hosts, markers and patterns are not checked.
+            if not bundled and name not in hosts and not any(re.search(r"^[|@!]|[*?]", h) for h in hosts):
+                keyscan = "ssh-keyscan" if port == "22" else f"ssh-keyscan -p {port}"
+                raise ValueError(
+                    f"known_hosts has no entry for {name!r}; generate it with `{keyscan} {host}`"
                 )
         return self
 
@@ -362,7 +411,7 @@ class Domain(Model):
 
 class Dns(Model):
     provider: Literal["cloudflare", "none"] = "cloudflare"
-    token: Stripped = ""
+    token: Annotated[Stripped, AfterValidator(_yaml_safe)] = ""
 
     @model_validator(mode="after")
     def check(self) -> Self:
@@ -447,6 +496,15 @@ KERNEL_DISK_NAME = re.compile(
 )
 
 
+# Partitions of the block devices above, and their by-id/by-path symlinks.
+# Talos Disk resources (which the install disk selector matches) only cover
+# whole disks, so these would also select no disk.
+PARTITION_PATH = re.compile(
+    r"(?P<disk>/dev/(?:s|v|h|xv)d[a-z]+|/dev/(?:nvme\d+(?:c\d+)?n\d+|mmcblk\d+|md\d+|loop\d+|nbd\d+)(?=p)"
+    r"|/dev/disk/by-(?:id|path)/.+(?=-part))(?:p|-part)?\d+"
+)
+
+
 def _disk(value: str) -> str:
     """Accept a /dev path or symlink, or a disk serial (any value without a leading "/")."""
     # Rendered into a double-quoted YAML string and a CEL string in a plain YAML
@@ -464,7 +522,16 @@ def _disk(value: str) -> str:
             f"{value!r} looks like a kernel device name; use '/dev/{value}', "
             "or a /dev/disk/by-id/ path if it is a disk serial"
         )
+    if match := PARTITION_PATH.fullmatch(value):
+        raise ValueError(f"{value!r} is a partition; Talos installs to a whole disk, e.g. {match['disk']!r}")
+    if value.startswith(("/dev/disk/by-partuuid/", "/dev/disk/by-partlabel/")):
+        raise ValueError(f"{value!r} is a partition; Talos installs to a whole disk")
     return value
+
+
+# Talos's CEL mac() renders lowercase and colon-separated.
+def _mac(value: Any) -> Any:
+    return value.strip().lower().replace("-", ":") if isinstance(value, str) else value
 
 
 class Node(Model):
@@ -472,7 +539,13 @@ class Node(Model):
     address: IPv4Address
     controller: bool
     disk: Annotated[str, Field(min_length=1), AfterValidator(_disk)]
-    mac_addr: str = Field(pattern=r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+    mac_addr: Annotated[
+        str,
+        Field(pattern=r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$"),
+        BeforeValidator(
+            _mac, json_schema_input_type=Annotated[str, Field(pattern=r"^\s*([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\s*$")]
+        ),
+    ]
     # Falls back to talos.schematic_id when unset.
     schematic_id: _unsettable(SchematicId | None) = None
     mtu: int = Field(default=1500, ge=1450, le=9000)
@@ -482,10 +555,12 @@ class Node(Model):
 
     @model_validator(mode="after")
     def check(self) -> Self:
-        if self.name in ("global", "controller", "worker"):
-            raise ValueError(f"node name {self.name!r} is reserved")
         if len(set(self.kernel_modules)) != len(self.kernel_modules):
             raise ValueError("kernel_modules must not contain duplicates")
+        # Talos seals the TPM key against the PCR signing key that only
+        # SecureBoot (signed UKI) images carry.
+        if self.encrypt_disk and not self.secureboot:
+            raise ValueError("encrypt_disk requires secureboot: TPM disk encryption needs a SecureBoot image")
         return self
 
 
@@ -540,6 +615,16 @@ class Config(Model):
         return any(
             gateway.load_balancer_class == "io.cilium/node"
             for gateway in self.deployed_gateways.values()
+        )
+
+    # Node IPAM and node-port load balancers (MetalLB, cloud controllers)
+    # skip nodes labelled node.kubernetes.io/exclude-from-external-load-balancers,
+    # which Talos sets on controllers.
+    @computed_field
+    @property
+    def lb_uses_nodes(self) -> bool:
+        return self.cilium_node_ipam_enabled or any(
+            gateway.node_ports for gateway in self.deployed_gateways.values()
         )
 
     # networks.yaml holds the LB IPAM pool and the L2 or BGP announcements.
@@ -732,6 +817,23 @@ class Config(Model):
                 cidr = getattr(self.kubernetes, cidr_name)
                 if addr in cidr:
                     raise ValueError(f"{owner} {addr} is inside kubernetes.{cidr_name} {cidr}")
+
+        # Nodes resolve names and sync time before the cluster runs, and
+        # k8s-gateway forwards to the nodes' own resolvers.
+        in_cluster = {addr: owner for owner, addr in gateways.items()}
+        if api.vip:
+            in_cluster[api.addr] = "kubernetes.api.addr"
+        for field in ("dns_servers", "ntp_servers"):
+            for i, addr in enumerate(getattr(self.network, field)):
+                owner = f"network.{field}[{i}]"
+                if addr.is_unspecified or addr.is_loopback or addr.is_multicast:
+                    raise ValueError(f"{owner} {addr} is not usable (unspecified, loopback or multicast)")
+                if addr in in_cluster:
+                    raise ValueError(f"{owner} {addr} is {in_cluster[addr]}, which only answers once the cluster runs")
+                for cidr_name in ("pod_cidr", "svc_cidr"):
+                    cidr = getattr(self.kubernetes, cidr_name)
+                    if addr in cidr:
+                        raise ValueError(f"{owner} {addr} is inside kubernetes.{cidr_name} {cidr}")
 
         for i, node in enumerate(self.nodes):
             if node.address not in node_cidr:

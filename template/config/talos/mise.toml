@@ -63,22 +63,33 @@ arg "[path]" help="Snapshot file (default: .private/etcd/<timestamp>.snapshot)" 
 '''
 run = '''
 node="$(yq '[.nodes[] | select(.role == "control-plane")][0].ip' topf.yaml)"
-path="${usage_path:-{{config_root}}/../.private/etcd/$(date +%Y%m%d-%H%M%S).snapshot}"
+path="${usage_path:-$MISE_MONOREPO_ROOT/.private/etcd/$(date +%Y%m%d-%H%M%S).snapshot}"
 cd "$MISE_ORIGINAL_CWD"
 mkdir -p "$(dirname "$path")"
 talosctl --nodes "$node" etcd snapshot "$path"
 '''
 
-# Both sign a fresh admin cert locally from secrets.sops.yaml and topf.yaml
-# without contacting the cluster, so they also work when the old ones have
-# expired.
+# Both sign a fresh admin cert offline from secrets.sops.yaml, so they also
+# work when the old one has expired.
 [tasks.talosconfig]
 description = "Regenerate talos/talosconfig (its admin cert expires after a year)"
+depends = [":require-secrets"]
 run = [{ task = "//bootstrap:talos-talosconfig" }]
 
 [tasks.kubeconfig]
 description = "Regenerate kubeconfig (its admin cert expires after a year)"
+depends = [":require-secrets"]
 run = [{ task = "//bootstrap:talos-kubeconfig" }]
+
+# Without the bundle, topf offers to generate a new one, whose certs the
+# cluster rejects.
+[tasks.require-secrets]
+hide = true
+run = '''
+if [[ ! -f secrets.sops.yaml ]]; then
+    mise run //:log fatal "talos/secrets.sops.yaml not found; restore it from Git"
+fi
+'''
 
 # topf intentionally does not manage Kubernetes upgrades
 [tasks.upgrade-k8s]
